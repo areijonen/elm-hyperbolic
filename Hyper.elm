@@ -210,7 +210,7 @@ entries =
   , Geodesic (-2,7) (-2,5)
   ]
   -}
-  [Circle (0,3) 1 Nothing, Circle (0,3) 0.8 Nothing, Circle (0,3) 0.7 Nothing, Circle (0,3) 0.5 Nothing, Circle (0,3) 0.1 Nothing
+  [Circle (0,3) 1 Nothing, Circle (0,3) 0.8 Nothing, Circle (0,3) 0.6 Nothing, Circle (0,3) 0.4 Nothing, Circle (0,3) 0.2 Nothing, Circle (0,3) 0.03 Nothing
   ,Circle (0, upperPlaneTravelUp 3 2) 1 (Just "imgs/circle.png")
 -- ,Circle (-4,2.1) 2, Circle (0, 2.1) 2, Circle (4,2.1) 2, Circle (-2, 6.1) 2, Circle (2, 6.1) 2
   ]
