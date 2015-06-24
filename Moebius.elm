@@ -16,8 +16,8 @@ infixl 6 <+>
 a <+> b = a `Complex.add` b
 
 compose (Moebius a b c d) (Moebius a' b' c' d') =
-  Moebius (a<*>a'<+>b<*>c') (a<*>b'<+>b<*>d') (c<*>a'<+>d<*>c') (c<*>b'<+>d<*>d')   
- 
+  Moebius (a<*>a'<+>b<*>c') (a<*>b'<+>b<*>d') (c<*>a'<+>d<*>c') (c<*>b'<+>d<*>d')
+
 apply (Moebius a b c d) z =
   ((a `Complex.multiply` z) `Complex.add` b) `Complex.divide`
     ((c `Complex.multiply` z) `Complex.add` d)
@@ -31,9 +31,17 @@ upperHalfPlaneTranslation dx =
 upperHalfPlaneTranslatePoints (Complex.Complex a b) (Complex.Complex c d) =
   Moebius (Complex.Complex d 0) (Complex.Complex (b*c-a*d) 0) (Complex.Complex 0 0) (Complex.Complex b 0)
 
-upperHalfPlaneRotateAroundi theta = 
+upperHalfPlaneRotateAroundi theta =
   let (ct,st) = (cos theta, sin theta)
   in Moebius (Complex.Complex ct 0) (Complex.Complex st 0) (Complex.Complex -st 0) (Complex.Complex ct 0)
+
+upperHalfPlaneRotateAroundPoint (Complex.Complex x y) theta =
+  let (ct, st) = (cos (theta/2), sin (theta/2))
+      a = y*ct - x*st
+      b = (x*x+y*y) * st
+      c = -st
+      d = x*st + y*ct
+  in Moebius (Complex.Complex a 0) (Complex.Complex b 0) (Complex.Complex c 0) (Complex.Complex d 0)
 
 upperHalfPlaneDilation s =
   Moebius (Complex.Complex s 0) (Complex.Complex 0 0) (Complex.Complex 0 0) (Complex.Complex (1/s) 0)
@@ -45,12 +53,22 @@ upperHalfPlaneReflection =
 unitDiskTranslation a =
   Moebius (Complex.Complex 1 0) (Complex.negate a) (Complex.negate <| Complex.conjugate a) (Complex.Complex 1 0)
 
+rotation theta = Moebius
+  (Complex.Complex (cos theta) (sin theta)) Complex.zero Complex.zero Complex.one
+
 -- Map a to b by translation
 unitDiskTranslatePoints a b =
   (unitDiskTranslation b |> inverse) `compose` (unitDiskTranslation a)
 
-rotation theta = Moebius 
-  (Complex.Complex (cos theta) (sin theta)) (Complex.Complex 0 0) (Complex.Complex 1 0)
+-- TODO: explicit formula for composed transformation
+unitDiskRotateAroundPoint p angle =
+  (unitDiskTranslation p |> inverse)
+    `compose`
+  (rotation angle)
+    `compose`
+  (unitDiskTranslation p)
+
+scaling s = Moebius (Complex.Complex s 0) Complex.zero Complex.zero Complex.one
 
 -- divide by +-sqrt(det A)
 normalize (Moebius a b c d) =

@@ -14,3 +14,5 @@ divide (Complex a b) (Complex c d) =
 conjugate (Complex a b) = Complex a -b
 norm (Complex a b) = sqrt <| a*a + b*b
 i = Complex 0 1
+one = Complex 1 0
+zero = Complex 0 0
