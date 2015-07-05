@@ -11,69 +11,39 @@ import Touch
 import Bounds exposing (Bounds)
 
 import Svg exposing (..)
-import Svg.Attributes exposing (..)
+import Svg.Attributes -- exposing (..)
 import Svg.Events
+import Svg.Lazy
 import Html exposing(Html)
 import VirtualDom exposing(attribute)
 
 import PlaneGeometry
+import HyperbolicGeometry
 import String
 import Dict
 
 import Point exposing(..) -- Point, <->, </>, <+> etc
 
+type GeometryEntry = Geodesic Point Point
+  | Circle Point Float (Maybe String)
+
+type Content = TextContent String | ImageContent String
+
+type Tree a = Node a (List (Tree a))
+
 type PlaneGeometryModel =
-  Euclidean | HyperbolicDisc | HyperbolicHalfPlane
+  Euclidean | PoincareDisk | HyperbolicHalfPlane | KleinDisk
 
 type alias Range = (Float, Float)
 
-
-type GeometryElement =
+type DrawableElement =
   CircleSegment { center : Point, radius : Float, angle : Range }
   | LineSegment (Point, Point)
+  | Polygon (List Point)
   | Marker Point
   | Image { source : String, bounds: Bounds.Bounds }
 
-atanh x = 0.5*(logBase e)( (1+x)/(1-x) )
-
-{-
-Compass and Straightedge in the
-Poincare Disk:
-http://comp.uark.edu/~strauss/papers/hypcomp.pdf
--}
-poincareArc (ax,ay) (bx,by) =
-  let
-    inverseA = (ax,ay) </> (ax*ax+ay*ay)
-  in
-    PlaneGeometry.circleFromThreePoints (ax,ay) (bx,by) inverseA
-
-pathBetweenPoints : PlaneGeometryModel -> Point -> Point -> GeometryElement
-pathBetweenPoints model (ax,ay) (bx,by) =
-  case model of
-    Euclidean -> LineSegment ((ax,ay), (bx,by))
-    HyperbolicDisc ->
-      case poincareArc (ax,ay) (bx,by) of
-        Nothing -> LineSegment ((ax, ay), (bx,by))
-        Just (c,r) ->
-          let theta = angle <| (ax,ay) <-> c
-              span = angleBetween ((ax,ay) <-> c) ((bx,by) <-> c)
-          in CircleSegment { center=c, radius=r, angle=(theta, theta+span) }
-    HyperbolicHalfPlane ->
-      if ax == bx then
-        LineSegment ((ax,ay), (bx,by))
-      else
-        let x = (bx*bx + by*by - ax*ax - ay*ay) / (2*(bx-ax))
-            center = (x,0)
-            r = distanceBetweenPoints Euclidean center (ax,ay)
-            theta = atan2 ay (ax-x)
-            theta'= atan2 by (bx-x)
-        in CircleSegment { center=(x,0), radius=r, angle=(Basics.min theta theta', Basics.max theta theta') }
-
-{-
-  U_{z0,t}(z) = exp(i*t)* (z - z0)/(z - conj(z0))
-  -- canonical map is from: i -> (0,0), (0,0) -> (0, -1)
-  U_{i, pi/2}(z) = (i*z + 1)/(z+i)
--}
+type alias TouchMove = { id : Int, x : Float, y : Float, x_:Float,dx : Float, dy : Float}
 
 foldps : (a -> s -> (b,s)) -> (b,s) -> Signal a -> Signal b
 foldps f bs aS = fst <~ foldp (\a (_,s) -> f a s) bs aS
@@ -82,7 +52,55 @@ catMaybes maybes = List.foldr (\x l -> case x of
   Nothing -> l
   Just x' -> x' :: l) [] maybes
 
-type alias TouchMove = { id : Int, x : Float, y : Float, x_:Float,dx : Float, dy : Float}
+-- no List.zip (only unzip)
+zip : List a -> List b -> List (a,b)
+zip listX listY =
+  case (listX, listY) of
+    (x::xs, y::ys) -> (x,y) :: zip xs ys
+    (  _  ,   _  ) -> []
+
+atanh x = 0.5*(logBase e)( (1+x)/(1-x) )
+acosh x = logBase e (x + sqrt (x*x - 1))
+sinh x = (e^x - e^(-x)) / 2
+cosh x = (e^x + e^(-x)) / 2
+
+{-
+Compass and Straightedge in the
+Poincare Disk:
+http://comp.uark.edu/~strauss/papers/hypcomp.pdf
+-}
+poincareArc (ax,ay) (bx,by) =
+  if (ax == 0 && ay == 0) || (bx == 0 && by == 0)
+  then Nothing
+  else
+    let
+      inverseA = (ax,ay) </> (ax*ax+ay*ay)
+    in
+      PlaneGeometry.circleFromThreePoints (ax,ay) (bx,by) inverseA
+
+pathBetweenPoints : PlaneGeometryModel -> Point -> Point -> DrawableElement
+pathBetweenPoints model (ax,ay) (bx,by) =
+  case model of
+    Euclidean -> LineSegment ((ax,ay), (bx,by))
+    PoincareDisk ->
+      case poincareArc (ax,ay) (bx,by) of
+        Nothing -> LineSegment ((ax, ay), (bx,by))
+        Just (c,r) ->
+          let theta = angle <| (ax,ay) <-> c
+              span = angleBetween ((ax,ay) <-> c) ((bx,by) <-> c)
+          in CircleSegment { center=c, radius=r, angle=(theta, theta+span) }
+    HyperbolicHalfPlane ->
+      if (ax - bx |> abs) < 1e-5 then
+        LineSegment ((ax,ay), (bx,by))
+      else
+        let x = (bx*bx + by*by - ax*ax - ay*ay) / (2*(bx-ax))
+            r = (x-ax)*(x-ax) + ay*ay |> sqrt
+            theta = atan2 ay (ax-x)
+            theta'= atan2 by (bx-x)
+        in CircleSegment { center=(x,0), radius=r, angle=(Basics.min theta theta', Basics.max theta theta') }
+    KleinDisk ->
+      -- input assumed to be in poincare disk coordinates
+      LineSegment (HyperbolicGeometry.poincareToKlein (ax,ay), HyperbolicGeometry.poincareToKlein (bx,by))
 
 touchDrags : Signal (List TouchMove)
 touchDrags =
@@ -105,47 +123,8 @@ touchDrags =
       in (touchMoves, state')
   in foldps step ([], Dict.empty) Touch.touches
 
---moebiusUpperHalfPlaneToPoincareDisk = Moebius (Complex 0 1) (Complex 1 0) (Complex 1 0) (Complex 0 1)
-moebiusUpperHalfPlaneToPoincareDiskGeneral z0 t =
-  let
-    eit = Complex (cos t) (sin t)
-  in
-    Moebius.Moebius eit (Complex.negate <| eit `Complex.multiply` z0) (Complex 1 0) (Complex.negate <| Complex.conjugate z0)
-moebiusUpperHalfPlaneToPoincareDisk = moebiusUpperHalfPlaneToPoincareDiskGeneral (Complex 0 100) (pi/2)
+moebiusUpperHalfPlaneToPoincareDisk = Moebius.upperHalfPlaneToPoincareDiskGeneral (Complex 0 100) (pi/2)
 moebiusPoincareDiskToUpperHalfPlane = Moebius.inverse moebiusUpperHalfPlaneToPoincareDisk
-
-{-
-mapUpperHalfPlaneToPoincareDisk (x,y) =
-  let
-   (zi0, zi1) = (x, y+1)
-   mod = zi0*zi0 + zi1*zi1
-   down = (zi0 / mod, -zi1 / mod)
-   complexMultiply (a,b) (c,d) = (a*c - b*d, a*d + b*c)
-  in
-    (-y+1, x) `complexMultiply` down
--}
-mapUpperHalfPlaneToPoincareDisk (x,y) =
-  let
-    (Complex x' y') = Moebius.apply moebiusUpperHalfPlaneToPoincareDisk (Complex x y)
-  in (x', y')
-
-distanceBetweenPoints : PlaneGeometryModel -> Point -> Point -> Float
-distanceBetweenPoints model (ax,ay) (bx,by) =
-  case model of
-    Euclidean ->
-      let dx = ax-bx
-          dy = ay-by
-      in sqrt (dx*dx + dy*dy)
-    HyperbolicDisc ->
-      -- d(0, r) = ln( (1+r)/(1-r) )
-      -- d(a, b) = 2*arctanh |(b-a)/(1-conj(a)*b)|
-
-      atanh 0.5
-
-type Entry = Geodesic Point Point
-  | Circle Point Float (Maybe String)
-
-type Tree a = Node a (List (Tree a))
 
 generateSubTree depth arity =
   case depth of
@@ -154,44 +133,33 @@ generateSubTree depth arity =
       let sub = generateSubTree (depth-1) arity
       in Node "" <| List.repeat arity sub
 
-testTree = Node "0" [Node "00" [Node "000" [Node "001" []]]
-                    ,Node "01" [Node "010" [Node "011" []]]
-                    ,Node "02" []
+testTree = Node "0" [Node "00" [Node "000" [Node "001" [generateSubTree 2 2]]]
+                    ,Node "01" [Node "010" [generateSubTree 2 2]]
+--                    ,Node "02" []
+                    {-
                     ,Node "03" []
                     ,Node "04" []
                     ,Node "05" []
                     ,Node "06" []
                     ,Node "07" []
+                    -}
                     ,generateSubTree 4 2
                     ]
 
-upperPlaneTravelToDirection (x,y) angle distance =
-  let
-    to = Moebius.upperHalfPlaneRotateAroundPoint (Complex x y) angle
-           `Moebius.compose`
-         Moebius.upperHalfPlaneTranslatePoints (Complex x y) (Complex 0 1)
-    back = Moebius.upperHalfPlaneRotateAroundPoint (Complex x y) -angle
-      `Moebius.compose`
-      Moebius.upperHalfPlaneTranslatePoints (Complex 0 1) (Complex x y)
 
-  in
-    Moebius.apply back (Complex 0 (e^distance)) |> Complex.toPair
-
-acosh x = logBase e (x + sqrt (x*x - 1))
 entriesFromTree (Node a children) (x,y) radius =
-      let angleIncrement = 2*pi/9.5
+      let angleIncrement = 2*pi/6.8 --9.5
           minAngle = pi - angleIncrement * (List.length children |> toFloat)/2.0
-          my = Circle (x, y) radius Nothing  -- TODO: pi/9.5 just seems visually fine
+          my = Circle (x, y) radius Nothing
           others = List.concat <| List.indexedMap (\i child ->
-              entriesFromTree child (upperPlaneTravelToDirection (x,y) (minAngle + (toFloat i)*angleIncrement) (2.0*radius)) (radius)) children
+            let
+              (x', y') = HyperbolicGeometry.upperPlaneTravelToDirection (x,y) (minAngle + (toFloat i)*angleIncrement) (2.0*radius)
+              line = Geodesic (x,y) (x',y')
+            in
+              line ::
+              (entriesFromTree child (x',y') radius)) children
       in my :: others
 
--- no List.zip (only unzip)
-zip : List a -> List b -> List (a,b)
-zip listX listY =
-  case (listX, listY) of
-    (x::xs, y::ys) -> (x,y) :: zip xs ys
-    (  _  ,   _  ) -> []
 
 circularEntries r =
   let
@@ -209,12 +177,10 @@ doCircle (cx,cy) r points =
   in
     List.map (uncurry Geodesic)
       <| zip circlePoints (Maybe.withDefault [] (List.tail circlePoints))
-upperPlaneTravelUp y distance = e^(distance + logBase e y)
-
 
 -- define these in upper half plane
 entries =
-  entriesFromTree testTree (0,5) 1
+  entriesFromTree testTree (0,100) 0.5
   {-
   [
     Geodesic (-2,5) (2,5)
@@ -269,191 +235,303 @@ entries =
 --  ++ List.map (\i -> Geodesic (0, 5*i+0.01) (0, 5*(i+1.01))) [0..5]
 
 
-{-
-(a + ib, r) => (a + i sqrt(b^2 - r^2), b*tanh(r))
 
--}
-euclideanCircleFromUnitDiskHyperbolicCircle (x,y_) r =
-  let
-    y = length (x,y_)
-    div = -((1+(e^r))^2) + (-1+(e^r))^2 *y*y
-    c' = ((-4*(e^r)*y) / div) <*> (normalize (x,y_))
-    r' = ( (-1 + e^(2*r)) * (-1+y*y)) / div
-  in
-    (c', r')
-
--- z |-> (2|z|/(1+|z|^2))z
-poincareToKlein p =
-  let l = Point.lengthSquared p
-  in (2*(sqrt l)/(1 + l)) <*> p
-
--- Do transformation in specified geometry model and output in euclidean coordinates
-{-
-transformEntry model transform entry =
-  case entry of
-    (Geodesic a b) ->
-      let
-        a' = Moebius.apply transform (Complex.fromPair a) |> Complex.toPair
-        b' = Moebius.apply transform (Complex.fromPair b) |> Complex.toPair
-      in Geodesic a' b'
-    Circle c r ->
-      case model of
-{-
-        HyperbolicDisc ->
-          let
-            c_disk = Moebius.apply transform (Complex.fromPair c)
-            (c', r') = euclideanCircleFromUnitDiskHyperbolicCircle (Complex.toPair c_disk) r
-          in Circle c' r'
--}
-        _ ->
-          let
-            c' = Moebius.apply transform (Complex.fromPair c)
-            r' = Moebius.apply transform (Complex.fromPair (c <+> (0,r))) `Complex.sub` c' |> Complex.norm
-          in Circle (Complex.toPair c') r'
--}
 transformEntry model transform entry = entry
 
-sinh x = (e^x - e^(-x)) / 2
-cosh x = (e^x + e^(-x)) / 2
+extraElements (Circle c r content) = case content of
+  Just src -> [Image {source=src, bounds=Bounds.fromCornerAndSize c (2*r, 2*r)}] --{left=cx-r', right=GeneralForm (fittedImage 1 1 src |> toForm |> scale (2*r')) (cx', cy')]
+  Nothing -> []
 
-generateGeometryFromEntry model transform entry =
+generateGeometryFromEntryEuclidean transform entry =
   case entry of
     Geodesic a b ->
-      case model of
-        HyperbolicDisc ->
-          let
-            --transform' = moebiusUpperHalfPlaneToPoincareDisk `Moebius.compose` transform
-            transform' = transform
-            (a',b') = (Moebius.apply transform' (Complex.fromPair a) |> Complex.toPair,
-                       Moebius.apply transform' (Complex.fromPair b) |> Complex.toPair)
-          in [pathBetweenPoints HyperbolicDisc a' b'
-             ,Marker a'
-             ,Marker b'
-             ]
-        _ -> let
-             (a',b') = (Moebius.apply transform (Complex.fromPair a) |> Complex.toPair,
-                       Moebius.apply transform  (Complex.fromPair b) |> Complex.toPair)
-             in [pathBetweenPoints model a' b', Marker a', Marker b']
+      let
+        (a',b') = (Moebius.apply transform (Complex.fromPair a) |> Complex.toPair,
+                   Moebius.apply transform (Complex.fromPair b) |> Complex.toPair)
+      in pathBetweenPoints Euclidean a' b' --, Marker a', Marker b'
+
     Circle (cx,cy) r content ->
       let
-      (Circle (cx',cy') r' _) = case model of
-        HyperbolicDisc -> -- Circle (mapUpperHalfPlaneToPoincareDisk (cx,cy)) r
-          let
-            --transform' = moebiusUpperHalfPlaneToPoincareDisk `Moebius.compose` transform
-            transform' = transform
-            c' = Moebius.apply transform' (Complex cx cy) |> Complex.toPair
-            (c_euclidean, r') = euclideanCircleFromUnitDiskHyperbolicCircle c' r
-          in Circle c_euclidean r' Nothing
+        (Complex cx' cy') = Moebius.apply transform (Complex cx cy)
+        r' = r
+      in CircleSegment { center=(cx',cy'), radius=r', angle=(0,2*pi) }
 
---        HyperbolicDisc -> transformEntry model moebiusUpperHalfPlaneToPoincareDisk entry
-        -- (x,y,r) -> (x,y cosh r, y sinh r) = (x', y', r')
-        HyperbolicHalfPlane ->
-          let
-            (Complex cx' cy') = Moebius.apply transform (Complex cx cy)
-            -- try to travel upwards from y to y' by distance r:
-            -- dist((x,y), (x, y')) = |log(y'/y)| = log(y'/y) = r
-            -- <=> log(y') - log(y) = r
-            -- <=> y' = exp(r + log(y))
---            r' = e^(r + logBase e cy')
-            r' = r
-          in Circle (cx',cy'*(cosh r')) (cy'*(sinh r')) Nothing --r' -- Circle (cx, cy*(cosh r)) (cy*(sinh r))
-        _ -> entry
-      extraElements = case content of
-        Just src -> [Image {source=src, bounds=Bounds.fromCornerAndSize (cx',cy') (2*r', 2*r')}] --{left=cx-r', right=GeneralForm (fittedImage 1 1 src |> toForm |> scale (2*r')) (cx', cy')]
-        Nothing -> []
-      in [CircleSegment { center=(cx',cy'), radius=r', angle=(0, 2*pi) }] ++ extraElements
+generateGeometryFromEntryUpperHalfPlane transform entry =
+  case entry of
+    Geodesic a b ->
+      let
+        (a',b') = (Moebius.apply transform (Complex.fromPair a) |> Complex.toPair,
+                   Moebius.apply transform (Complex.fromPair b) |> Complex.toPair)
+      in pathBetweenPoints HyperbolicHalfPlane a' b' --, Marker a', Marker b'
 
+    Circle (cx,cy) r content ->
+      let
+        (Complex cx' cy') = Moebius.apply transform (Complex cx cy)
+        r' = r
+        er = e^r'
+        e_r = e^(-r')
+        {-
+        sinh x = (e^x - e^(-x)) / 2
+        cosh x = (e^x + e^(-x)) / 2
+        -}
+      in CircleSegment { center=(cx',cy'*(er + e_r)/2), radius=cy'*(er - e_r)/2, angle=(0,2*pi) }
 
-arc radius angleFrom angleTo =
-  let
-    step = (angleTo - angleFrom) / 30
+generateGeometryFromEntryPoincareDisk transform entry =
+  case entry of
+    Geodesic a b ->
+      let
+        (a',b') = (Moebius.apply transform (Complex.fromPair a) |> Complex.toPair,
+                   Moebius.apply transform  (Complex.fromPair b) |> Complex.toPair)
+      in pathBetweenPoints PoincareDisk a' b' --, Marker a', Marker b']
+    Circle (cx,cy) r content ->
+      let
+        c' = Moebius.apply transform (Complex cx cy) |> Complex.toPair
+        (c_euclidean, r') = HyperbolicGeometry.euclideanCircleFromPoincareDiskCircle c' r
+      in CircleSegment { center=c_euclidean, radius=r', angle=(0, 2*pi) }
+
+generateGeometryFromEntryKleinDisk transform entry =
+  case entry of
+    Geodesic a b ->
+      let
+        (a',b') = (Moebius.apply transform (Complex.fromPair a) |> Complex.toPair |> HyperbolicGeometry.poincareToKlein,
+                   Moebius.apply transform (Complex.fromPair b) |> Complex.toPair |> HyperbolicGeometry.poincareToKlein)
+
+      in LineSegment (a',b')
+         --,Marker a',Marker b']
+
+    Circle (cx,cy) r content ->
+      let
+        c' = Moebius.apply transform (Complex cx cy) |> Complex.toPair
+        (c_euclidean, r') = HyperbolicGeometry.euclideanCircleFromPoincareDiskCircle c' r
+        step = pi/15
+        vertices = List.map (\x -> HyperbolicGeometry.poincareToKlein (c_euclidean <+> (r' * cos (x*step), r' * sin (x*step)))) [0..30]
+      in
+        Polygon vertices
+
+generateGeometryFromEntry model transform entry =
+  case model of
+    HyperbolicHalfPlane -> generateGeometryFromEntryUpperHalfPlane transform entry
+    PoincareDisk -> generateGeometryFromEntryPoincareDisk transform entry
+    KleinDisk -> generateGeometryFromEntryKleinDisk transform entry
+
+{-
+
+Error: Invalid value for <path> attribute
+d="
+M-30.42929180110376,6.19720525949876
+m -2.863834877476348,0
+a 2.863834877476348,2.8638348774763480 1,0 5.727669754952696,0
+a 2.863834877476348,2.8638348774763480 1,0 -5.727669754952696,0
+Z
+"patchObject @ Hyper.elm:13966applyProperties @ Hyper.elm:13925applyPatch @ Hyper.elm:14186applyPatch @ Hyper.elm:14381patchRecursive @ Hyper.elm:14356patch @ Hyper.elm:14334updateAndReplace @ Hyper.elm:15159draw @ Hyper.elm:10785drawCallback @ Hyper.elm:10771
+-}
+circleSegmentToSvgPathString center radius angle =
+  let (a1,a2) = angle
   in
-    List.map (\x -> (radius * cos (angleFrom+x*step), radius * sin (angleFrom+x*step))) [0..30] |> Graphics.Collage.path
+  if ((a2 - a1 |> abs) - 2*pi |> abs) < 0.001
+  then
+    let
+      (px,py) = center <+> (radius,0)
+      (px',py') = center <+> (-radius, 0)
+      rStr = toString radius
+      diamStr = toString (2*radius)
+    in "M" ++ (toString (fst center)) ++ "," ++ (toString (snd center)) ++
+      " m -" ++ rStr ++ ",0" ++
+      " a " ++ rStr ++ "," ++ rStr ++ " 0 1,0 " ++ diamStr ++ ",0" ++
+      " a " ++ rStr ++ "," ++ rStr ++ " 0 1,0 -" ++ diamStr ++ ",0 Z"
+  else
+    let
+      p r t = r <*> (cos t, sin t)
+      (px,py) = center <+> (p radius a1)
+      (px',py') = center <+> (p radius a2)
+      largeFlag = if a2-a1 > pi then "1" else "0"
+      sweepFlag = if a1 < a2 then "1" else "0"
+      pathString = "M" ++ (toString px) ++ "," ++ (toString py) ++ " A" ++
+        (toString radius) ++ "," ++ toString radius ++ " 0 " ++ largeFlag ++ "," ++ sweepFlag ++ " " ++
+          toString px' ++ "," ++ toString py'
+    in pathString
 
-constructSvg shape =
+compressItems items =
+  let
+    shapeToPathString shape =
+      case shape of
+        LineSegment ((x,y),(x',y'))
+           -> "M" ++ (toString x) ++ "," ++ (toString y) ++
+             " L" ++ (toString x') ++ "," ++ (toString y') ++ " Z"
+        CircleSegment {center, radius, angle} ->
+          circleSegmentToSvgPathString center radius angle
+        _ -> ""
+     {-
+    LineSegment (a,b) = Ma Lb Z
+
+    -}
+    pathString = List.map shapeToPathString items |> String.join " "
+    path = Svg.path [Svg.Attributes.d pathString] []
+      {-
+      List.map shapeToPathString items |>
+      List.map (\x -> Svg.path [Svg.Attributes.d x] [])
+      |> g []
+      -}
+  in
+    path
+
+constructSvg id shape =
+  let class_name = toString (id % 3)
+  in
   case shape of
-    -- TODO: use external CSS for these styles
-    --CircleSegment {center, radius, angle} -> Svg.circle [ Svg.Attributes.style "fill:transparent; stroke:black; ", cx (fst center |> toString), cy (snd center |> toString), r (toString radius) ] []
     CircleSegment {center, radius, angle} ->
-      if (((snd angle) - (fst angle) |> abs) - 2*pi |> abs) < 0.001
+      let (a1,a2) = angle
+      in
+      if ((a2 - a1 |> abs) - 2*pi |> abs) < 0.001
       then
-        Svg.circle [ Svg.Attributes.style "fill:transparent; stroke:black; ", cx (fst center |> toString), cy (snd center |> toString), r (toString radius) ] []
+        let
+          (cxStr,cyStr) = (fst center |> toString, snd center |> toString)
+          rStr = toString radius
+        in g [] <| [Svg.circle [
+            Svg.Attributes.cx cxStr, Svg.Attributes.cy cyStr, Svg.Attributes.r rStr
+            ,Svg.Attributes.class ("shape_" ++ toString (id % 3))
+          ] []
+          {-
+          ,Svg.image [
+            Svg.Attributes.x cxStr,
+            Svg.Attributes.y cyStr,
+            Svg.Attributes.width rStr,
+            Svg.Attributes.height rStr,
+            Svg.Attributes.xlinkHref "imgs/circle.png"] []
+          -}
+          --,Svg.text [x cxStr, y cyStr] [Html.text "1"]
+          ]
       else
         let
           p r t = r <*> (cos t, sin t)
-          (px,py) = center <+> (p radius (fst angle))
-          (px',py') = center <+> (p radius (snd angle))
-          largeFlag = "0" -- TODO
+          (px,py) = center <+> (p radius a1)
+          (px',py') = center <+> (p radius a2)
+          largeFlag = if a2-a1 > pi then "1" else "0"
+          sweepFlag = if a1 < a2 then "1" else "0"
           pathString = "M" ++ (toString px) ++ "," ++ (toString py) ++ " A" ++
-            (toString radius) ++ "," ++ toString radius ++ " 0 " ++ largeFlag ++ ",0 " ++
+            (toString radius) ++ "," ++ toString radius ++ " 0 " ++ largeFlag ++ "," ++ sweepFlag ++ " " ++
               toString px' ++ "," ++ toString py'
 
         in Svg.path [
                Svg.Attributes.d pathString
-               , Svg.Attributes.style "fill:transparent; stroke:black;"
+               ,Svg.Attributes.class class_name
              ]
              []
 
-    LineSegment (a,b) -> Svg.line [x1 (fst a |> toString), y1 (snd a |> toString),
-                                   x2 (fst b |> toString), y2 (snd a |> toString)] []
+    LineSegment (a,b) -> Svg.line [Svg.Attributes.x1 (fst a |> toString), Svg.Attributes.y1 (snd a |> toString),
+                                   Svg.Attributes.x2 (fst b |> toString), Svg.Attributes.y2 (snd b |> toString)
+                                   ,Svg.Attributes.class class_name] []
+    Polygon vertices ->
+      let pointStr = List.map (\(x,y) -> (toString x) ++ "," ++ (toString y)) vertices |> String.join ","
+      in Svg.polygon [Svg.Attributes.points pointStr, Svg.Attributes.class class_name] []
     Marker (x0,y0) ->
       let s = 2
-      in Svg.rect [x (x0-s |> toString), y (y0-s |> toString),
-                   Svg.Attributes.width (2*s |> toString), Svg.Attributes.height (2*s |> toString), Svg.Attributes.style "fill:transparent;"] []
+      in Svg.rect [Svg.Attributes.x (x0-s |> toString), Svg.Attributes.y (y0-s |> toString),
+                   Svg.Attributes.width (2*s |> toString), Svg.Attributes.height (2*s |> toString)] []
     Image {source, bounds} -> g [] [] -- TODO
 
-
 construct scaling shape =
-  case shape of
+  let
+    arc radius angleFrom angleTo =
+      let
+        step = (angleTo - angleFrom) / 30
+      in
+        List.map (\x -> (radius * cos (angleFrom+x*step), radius * sin (angleFrom+x*step))) [0..30] |> Graphics.Collage.path
+  in case shape of
     CircleSegment {center, radius, angle} -> traced ({defaultLine | width <- 1}) (arc (scaling * radius) (fst angle) (snd angle) ) |> move (scaling <*> center)
     LineSegment (a,b) -> traced ({defaultLine | width <- 1}) (segment (scaling <*> a) (scaling <*> b))
     Marker a -> filled red (Graphics.Collage.circle 1.5) |> move (scaling <*> a)
     Image {source, bounds} -> fittedImage 1 1 source |> toForm |> Graphics.Collage.scale (scaling * Bounds.maxExtent bounds) |> move (scaling <*> (Bounds.corner bounds))
- --form pos -> form |> move (scaling <*> pos) |> scale scaling
-
-width { left, right } = right-left
-height { top, bottom } = top-bottom
-
-{-
-transformGeometry transform shape =
-  case shape of
-    CircleSegment {center, radius, angle} -> let
-        center' = Moebius.apply transform (Complex.fromPair center)
-        radius' = (Moebius.apply transform ((Complex.fromPair center) `Complex.add` (Complex 0 radius)))
-          `Complex.sub` center' |> Complex.norm
-      in CircleSegment { center=(Complex.toPair center'), radius=radius', angle=angle }
-    LineSegment ((x,y),(x',y')) -> let
-      (Complex a b) = Moebius.apply transform (Complex x y)
-      (Complex a' b')  = Moebius.apply transform (Complex x' y')
-      in LineSegment ((a,b),(a',b'))
-    Marker a -> Marker (Moebius.apply transform (Complex.fromPair a) |> Complex.toPair)
--}
 
 transformGeometry scale shape =
   case shape of
     CircleSegment {center, radius, angle} -> CircleSegment {center=(scale*(fst center), scale*(snd center)), radius=scale*radius, angle=angle}
     LineSegment (a,b) -> LineSegment (scale <*> a, scale <*> b)
+    Polygon vertices -> Polygon (List.map (\x -> scale <*> x) vertices)
     Marker a -> Marker (scale <*> a)
     Image {source, bounds} -> Image {source=source, bounds=bounds}
 
+{-
+
+z = r*exp(it) + z0, z0 = r0*exp(it0)
+z^2 = (r*exp(it) + z0)^2 = r^2*exp(2it) + 2*r0*exp(it0)*r*exp(it) + r0^2 * exp(2*it0)
+    = r^2*exp(2it) + 2*r0*r*exp(i(t+t0)) + r0^2 * exp(2*it0)
+    = (r*exp(it))(r*exp(it) + 2*r0*exp(it0)) + r0^2 * exp(2*it0)
+-}
+
+{-
+transformGeometryMoebius moeb shape =
+  case shape of
+    CircleSegment {center, radius, angle} ->
+      CircleSegment {center=Moebius.applyToPair moeb center, radius=scale*radius, angle=angle}
+    LineSegment (a,b) ->
+      LineSegment (Moebius.applyToPair moeb a, Moebius.applyToPair moeb b)
+    Polygon vertices ->
+      Polygon (List.map (\x -> Moebius.applyToPair moeb x) vertices)
+    Marker a ->
+      Marker (Moebius.applyToPair moeb a)
+    Image {source, bounds} ->
+      Image {source=source, bounds=bounds}
+-}
+
+
+applyLod maxErr items =
+  List.map (\x ->
+    Just <| case x of
+      CircleSegment {center, radius, angle} ->
+        if radius > maxErr
+        then
+          let
+            begin = (radius <*> (cos <| fst angle, sin <| fst angle))
+            end = (radius <*> (cos <| snd angle, sin <| snd angle))
+            middlePoint = 0.5 <*> (begin <+> end)
+            middleAngle = 0.5 * ((fst angle) + (snd angle))
+            middleOnArc = radius <*> (cos middleAngle, sin middleAngle)
+            -- maximum distance from line segment (begin, end) to arc between them
+            error = middleOnArc <-> middlePoint |> Point.length
+          in
+            if error < maxErr
+            then LineSegment (center <+> begin, center <+> end)
+            else CircleSegment {center=center, radius=radius, angle=angle }
+        else Marker center
+      LineSegment (a,b) -> LineSegment (a,b)
+      Marker a -> Marker a
+      x -> x
+    ) items |> catMaybes
 
 upperHalfPlaneElementSvg entries transform =
   let
-    data = List.concatMap (generateGeometryFromEntry HyperbolicHalfPlane transform) <| List.map (transformEntry HyperbolicHalfPlane transform) entries
-    item = List.map constructSvg data |> g []
+    item =
+      List.map (generateGeometryFromEntryUpperHalfPlane transform) entries
+        |> applyLod 2
+        --|> compressItems
+        |> List.indexedMap constructSvg
+        |> g []
+--        (\i e -> constructSvg i (generateGeometryFromEntryUpperHalfPlane transform e))
+--        entries
   in
     item
 
-unitDiscElementSvg entries transform scale =
+poincareDiskElementSvg entries transform scale =
   let
-    data = List.concatMap (generateGeometryFromEntry HyperbolicDisc transform) <| List.map (transformEntry HyperbolicDisc transform) entries
-    item = List.map (constructSvg << transformGeometry scale) data |> g []
+    data = List.map (generateGeometryFromEntryPoincareDisk transform) entries
+      |> applyLod 0.01
+    --item = List.map (transformGeometry scale) data |> compressItems
+    item = List.indexedMap (\i e -> constructSvg i (transformGeometry scale e)) data |> g []
+  in
+    item
+
+kleinDiskElementSvg entries transform scale =
+  let
+    data = List.map (generateGeometryFromEntryKleinDisk transform) entries
+    item =
+      List.indexedMap (\i e -> constructSvg i (transformGeometry scale e)) data |> g []
   in
     item
 
 upperHalfPlaneElement transform =
   let
-    data = List.concatMap (generateGeometryFromEntry HyperbolicHalfPlane transform) <| List.map (transformEntry HyperbolicHalfPlane transform) entries
+    data = List.map (generateGeometryFromEntryUpperHalfPlane transform) entries
     item = [
         List.map (construct 5) data |> group
         , traced (solid purple) (segment (-150/5, 0) (150/5, 0))
@@ -463,7 +541,7 @@ upperHalfPlaneElement transform =
 
 upperHalfPlaneEuclideanElement transform =
   let
-    data = List.concatMap (generateGeometryFromEntry Euclidean transform) <| List.map (transformEntry Euclidean transform) entries
+    data = List.map (generateGeometryFromEntryEuclidean transform) entries
     item = [
         List.map (construct 5) data |> group
         , traced (solid purple) (segment (-150, 0) (150, 0))
@@ -471,13 +549,13 @@ upperHalfPlaneEuclideanElement transform =
   in
     collage 300 300 [item]
 
-unitDiscElement transform =
+poincareDiskElement transform =
   let
-    data = List.concatMap (generateGeometryFromEntry HyperbolicDisc transform) <| List.map (transformEntry HyperbolicDisc transform) entries
+    item = List.map (generateGeometryFromEntryPoincareDisk transform) entries
+      |> List.map (construct 150) |> group
   in
-    collage 300 300 [
-      List.map (construct 150) data |> group
-      , outlined (solid purple) (Graphics.Collage.circle 150)
+    collage 300 300 [item
+        ,outlined (solid purple) (Graphics.Collage.circle 150)
       ]
 
 --keepWhen : Signal Bool -> a -> Signal a -> Signal a
@@ -513,7 +591,8 @@ type alias Box =
 
 type ElementFocus = NoFocus
   | UpperhalfPlaneFocus Box
-  | UnitDiscFocus Box
+  | PoincareDiskFocus Box
+  | KleinDiskFocus Box
 
 focus = Signal.mailbox NoFocus
 
@@ -563,11 +642,11 @@ transformation =
                Nothing ->
                  Moebius.upperHalfPlaneTranslatePoints (Complex x'' y'') (Complex x' y')
                    `Moebius.compose` moeb |> Moebius.normalize
-         UnitDiscFocus box ->
+         PoincareDiskFocus box ->
            -- do stuff locally but return result in upper half plane
            let
              invTrans = inversePosition box.position
-             discTransform = moebiusUpperHalfPlaneToPoincareDisk `Moebius.compose` moeb
+             diskTransform = moebiusUpperHalfPlaneToPoincareDisk `Moebius.compose` moeb
              toLocal p = applyPosition invTrans p </> 150.0
              (x',y') = toLocal (x,y)--( (x-150-620),  (150-y)) </> 150
              (x'',y'') = toLocal (x-dx, y-dy) -- ( ((x-dx)-150-620),  (150-(y-dy))) </> 150
@@ -585,7 +664,7 @@ transformation =
                          `Moebius.compose`
                        Moebius.unitDiskRotateAroundPoint (Complex.fromPair p) rotationAngle
                          `Moebius.compose`
-                       discTransform |> Moebius.normalize)
+                       diskTransform |> Moebius.normalize)
                      |> Maybe.withDefault moeb
 
                Nothing ->
@@ -593,18 +672,7 @@ transformation =
                    `Moebius.compose`
                  Moebius.unitDiskTranslatePoints (Complex x'' y'') (Complex x' y')
                    `Moebius.compose`
-                 discTransform |> Moebius.normalize
-                --rotationAngle = PlaneGeometry.angleBetweenLines (x',y') (x2',y2') (x'', y'') (x2'', y2'')
-                --rotationAngle = Point.angleBetween (x2'-x', y2'-y') (x2''-x'', y2''-y'')
-                --rotationAngle = Point.angleBetween (x2'-x', y2'-y') (x2''-x'', y2''-y'')
-                --intersectionPoint = PlaneGeometry.lineLineIntersection (x',y') (x2',y2') (x'', y'') (x2'', y2'')
-
-{-
-                Maybe.withDefault moeb
-                  <| Maybe.map (\x ->
-                  Just p ->
-                  Nothing -> moeb -- no rotation due to parallel lines, do nothing
-                  -}
+                 diskTransform |> Moebius.normalize
      ) Moebius.identity input
 
 type alias State = { transformation : Moebius, focus : ElementFocus, drag : DragMovement, touches : List TouchMove }
@@ -613,7 +681,6 @@ state : Signal State
 state = (\t f d touches-> { transformation=t, focus=f, drag=d, touches=touches }) <~ transformation ~ focus.signal ~ dragMovement ~ touchDrags
 
 {-
-
 [a 0 tx][c 0 tx']   [a*c  0    a*tx' + tx]
 [0 d ty][0 b ty'] = [0    d*b  d*ty' + ty]
 [0 0  1][0 0   1]   [0    0    1]
@@ -629,14 +696,13 @@ composePosition p p' =
   in
     { location = location', scale = scale'}
 
-f {a,b} {a,b} = a-a
-
 inversePosition { location, scale } =
   let invScale = Point.map (\x -> 1.0/x) scale
   in {
        location=-1.0 <*> (fst location / fst invScale, snd location / snd invScale),
        scale=invScale
      }
+
 applyPosition { location, scale } (x,y) = ((fst scale)*x + fst location, (snd scale)*y + snd location)
 
 boundsToViewBox {left, right, top, bottom} =
@@ -652,13 +718,20 @@ upperHalfBox = { name = "upper-half"
                , position = { location=(150, 300), scale=(1,-1)}
                }
 
-unitDiscBox = { upperHalfBox |
-                  name <- "unit-disc"
+poincareDiskBox = { upperHalfBox |
+                  name <- "poincare-disk"
                   , bounds <- Bounds.fromCornerAndSize (300,0) (300,300)
                   , position <- {location=(450, 150),scale=(1.0,-1.0) }
               }
 
-boxes = [upperHalfBox, unitDiscBox]
+kleinDiskBox = { poincareDiskBox |
+                  name <- "klein-disk"
+                  , bounds <- Bounds.fromCornerAndSize (600,0) (300,300)
+                  , position <- {location=(750, 150),scale=(1.0,-1.0) }
+              }
+
+
+boxes = [upperHalfBox, poincareDiskBox, kleinDiskBox]
 
 main : Signal Html
 main = Signal.map (\state ->
@@ -667,24 +740,61 @@ main = Signal.map (\state ->
       onTouchStart = Svg.Events.messageOn "touchstart"
       focusMessage = Signal.message focus.address
       boundingBox = let (b :: rest) = List.map .bounds boxes
-                    in List.foldr Bounds.union b rest
-      discTransform = moebiusUpperHalfPlaneToPoincareDisk `Moebius.compose` moeb
+                    in List.foldl Bounds.union b rest
+      diskTransform = moebiusUpperHalfPlaneToPoincareDisk `Moebius.compose` moeb
+
       upperHalfSvg = upperHalfPlaneElementSvg entries moeb
-      unitDiscSvg = unitDiscElementSvg entries discTransform 150
-      gfxContent = svg [ version "1.1", x "0", y "0", viewBox (boundsToViewBox boundingBox),
+      poincareDiskSvg = poincareDiskElementSvg entries diskTransform 150
+      kleinDiskSvg = kleinDiskElementSvg entries diskTransform 150
+
+      upperHalfElem = g [Svg.Attributes.clipPath <| "url(#clip-" ++ upperHalfBox.name ++ ")"]
+          [g [Svg.Attributes.class upperHalfBox.name, Svg.Attributes.transform (positionToSvgTransform upperHalfBox.position)--, viewBox (boundsToViewBox upperHalfBox.bounds)
+              ,Svg.Events.onMouseDown (Signal.message focus.address (UpperhalfPlaneFocus upperHalfBox))
+              ,onTouchStart (Signal.message focus.address (UpperhalfPlaneFocus upperHalfBox))]
+             [upperHalfSvg]]
+
+      poincareDiskElem = g [Svg.Attributes.class poincareDiskBox.name, Svg.Attributes.transform (positionToSvgTransform poincareDiskBox.position)--, viewBox (boundsToViewBox poincareDiskBox.bounds)
+          ,Svg.Events.onMouseDown (Signal.message focus.address (PoincareDiskFocus poincareDiskBox))
+          ,onTouchStart (Signal.message focus.address (PoincareDiskFocus poincareDiskBox))]
+          [poincareDiskSvg, CircleSegment {radius=150, center=(0,0), angle=(0, 2*pi)} |> constructSvg 0 ]
+
+      kleinBoxElem = g [Svg.Attributes.class kleinDiskBox.name, Svg.Attributes.transform (positionToSvgTransform kleinDiskBox.position)--, viewBox (boundsToViewBox kleinDiskBox.bounds)
+          ,Svg.Events.onMouseDown (Signal.message focus.address (KleinDiskFocus kleinDiskBox))
+          ,onTouchStart (Signal.message focus.address (KleinDiskFocus kleinDiskBox))]
+          [kleinDiskSvg, CircleSegment {radius=150, center=(0,0), angle=(0, 2*pi)} |> constructSvg 0]
+
+      styleStr = "circle,path,line,polygon { fill: transparent; stroke: black;}" ++
+        ".shape_0 { stroke: red; }" ++
+        ".shape_1 { stroke: green; }" ++
+        ".shape_2 { stroke: navy; }"
+
+      gfxContent = svg [ Svg.Attributes.version "1.1", Svg.Attributes.x "0", Svg.Attributes.y "0",
+                         Svg.Attributes.viewBox (boundsToViewBox boundingBox),
         Svg.Attributes.width (Bounds.width boundingBox |> toString),
         Svg.Attributes.height (Bounds.height boundingBox |> toString)]
-                   [g [class upperHalfBox.name, transform (positionToSvgTransform upperHalfBox.position)--, viewBox (boundsToViewBox upperHalfBox.bounds)
-                       ,Svg.Events.onMouseDown (Signal.message focus.address (UpperhalfPlaneFocus upperHalfBox))
-                       ,onTouchStart (Signal.message focus.address (UpperhalfPlaneFocus upperHalfBox))]
-                       [upperHalfSvg]
-                   ,g [class unitDiscBox.name, transform (positionToSvgTransform unitDiscBox.position)--, viewBox (boundsToViewBox unitDiscBox.bounds)
-                       ,Svg.Events.onMouseDown (Signal.message focus.address (UnitDiscFocus unitDiscBox))
-                       ,onTouchStart (Signal.message focus.address (UnitDiscFocus unitDiscBox))]
-                       [unitDiscSvg, CircleSegment {radius=150, center=(0,0), angle=(0, 2*pi)} |> constructSvg ]]
+                   [
+                   Svg.style [] [Html.text styleStr],
+                   Svg.defs []
+                     [
+                       Svg.Lazy.lazy (\box ->
+                         Svg.clipPath [Svg.Attributes.id ("clip-" ++ box.name)]
+                         [Svg.rect [Svg.Attributes.x (Bounds.corner box.bounds |> fst |> toString)
+                                   ,Svg.Attributes.y (Bounds.corner box.bounds |> snd |> toString)
+                                   ,Svg.Attributes.width (Bounds.width box.bounds |> toString)
+                                   ,Svg.Attributes.height (Bounds.height box.bounds |> toString)]
+                                  []
+                         ]
+                       ) upperHalfBox,
+                       g [Svg.Attributes.id "circle"] [Svg.circle [Svg.Attributes.style "fill:transparent; stroke:black;",
+                           Svg.Attributes.r "5", Svg.Attributes.cx "0", Svg.Attributes.cy "0"] []]
+                     ]
+                   , upperHalfElem
+                   , poincareDiskElem
+                   , kleinBoxElem
+                   ]
   in
     Html.div [] [gfxContent
-                 , Html.text (toString state.focus)
+                 ,Html.text (toString state.focus)
     {-
                  , Html.text <| (toString state.focus) ++ (toString state.drag) ++ (toString <| mapPointToBox upperHalfBox state.drag.position)
                  , Html.text (boundsToViewBox boundingBox)
@@ -698,24 +808,23 @@ main = Signal.map (\state ->
 main : Signal Element
 main = Signal.map (\state ->
   let moeb = state.transformation
-      discTransform = moebiusUpperHalfPlaneToPoincareDisk `Moebius.compose` moeb
+      diskTransform = moebiusUpperHalfPlaneToPoincareDisk `Moebius.compose` moeb
   in flow down [
      flow right [
        upperHalfPlaneElement moeb
          |> Graphics.Input.hoverable
-            (\x -> let msg = if x then UpperhalfPlaneFocus else NoFocus
+            (\x -> let msg = if x then UpperhalfPlaneFocus upperHalfBox else NoFocus
                    in Signal.message focus.address msg)
        , spacer 10 1,
        upperHalfPlaneEuclideanElement moeb,
        spacer 10 1,
-       unitDiscElement moeb
+       PoincareDiskElement moeb
          |> Graphics.Input.hoverable
-            (\x -> let msg = if x then UnitDiscFocus else NoFocus
+            (\x -> let msg = if x then PoincareDiskFocus poincareDiskBox else NoFocus
                    in Signal.message focus.address msg)
      ]
      , show state.focus
      , show moeb
 
      ]) state
-
 -}
