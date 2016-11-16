@@ -1,4 +1,4 @@
-module PlaneGeometry where
+module PlaneGeometry exposing (..)
 
 import Point exposing(..)
 import Complex
@@ -24,7 +24,7 @@ angleBetweenLines p1 p2 p3 p4 =
     l1 = p2 <-> p1
     l2 = p4 <-> p3
   in
-    (l1 `Point.dot` l2) / ((Point.length l1) * (Point.length l2)) |> acos
+    (Point.dot l1 l2) / ((Point.length l1) * (Point.length l2)) |> acos
 
 lineLineIntersection (x1,y1) (x2,y2) (x3,y3) (x4,y4) =
   let

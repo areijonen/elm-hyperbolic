@@ -1,4 +1,4 @@
-module Complex where
+module Complex exposing (..)
 
 type Complex = Complex Float Float
 

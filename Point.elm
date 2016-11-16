@@ -1,17 +1,17 @@
-module Point where
+module Point exposing (..)
 
 type alias Point = (Float, Float)
 
-(a,b) <+> (c,d) = (a+c, b+d)
+(<+>) (a,b) (c,d) = (a+c, b+d)
 
 --infixl 6 <->
-(a,b) <-> (c,d) = (a-c, b-d)
+(<->) (a,b) (c,d) = (a-c, b-d)
 
 --infixl 7 <*>
-s <*> (a,b) = (s*a, s*b)
+(<*>) s (a,b) = (s*a, s*b)
 
-(a,b) </> (s) = (a/s, b/s)
-(a,b) . (c,d) = a*c + b*d
+(</>) (a,b) (s) = (a/s, b/s)
+(.) (a,b) (c,d) = a*c + b*d
 rotate90 (a,b) = (-b, a)
 length (a,b) = sqrt (a*a + b*b)
 lengthSquared (a,b) = a*a + b*b
@@ -22,7 +22,7 @@ normalize v = v </> (length v)
 map f (a,b) = (f a, f b)
 
 angleBetween a b =
-  let theta = acos <| (a `dot` b) / ((length a)*(length b))
+  let theta = acos <| (dot a b) / ((length a)*(length b))
       (ax,ay) = a
       (bx,by) = b
       sign = if ax*by - ay*bx < 0
