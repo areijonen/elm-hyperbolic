@@ -1,8 +1,8 @@
 import Html exposing (Html, button, div, text)
 import Html.Events exposing (onClick)
 
-import Svg --exposing (..)
-import Svg.Attributes -- exposing (..)
+import Svg
+import Svg.Attributes
 import Svg.Events
 import Svg.Lazy
 import String
@@ -16,6 +16,7 @@ import Point exposing(..) -- Point, <->, </>, <+> etc
 import HyperbolicGeometry
 import PlaneGeometry
 import Complex exposing (..)
+import DrawableElement exposing (..)
 
 type alias Position = { location : Point, scale : Point }
 
@@ -28,15 +29,23 @@ type alias Box = {
 type ElementFocus =
     UpperhalfPlaneFocus Box
   | PoincareDiskFocus Box
-  | KleinDiskFocus Box
+--  | KleinDiskFocus Box
+
+type GeometryEntry = Geodesic Point Point
+  | Circle Point Float (Maybe String)
+
+type PlaneGeometryModel =
+  Euclidean | PoincareDisk | HyperbolicHalfPlane | KleinDisk
 
 type alias Model = {
   transformation : Moebius.Moebius,
   focus : Maybe ElementFocus,
-  mousePosition : Maybe (Float, Float)
+  mousePosition : Maybe (Float, Float),
+  entries : List GeometryEntry
 }
 
-emptyModel = { transformation=Moebius.identity, focus=Nothing, mousePosition=Nothing }
+emptyModel : Model
+emptyModel = { transformation=Moebius.identity, focus=Nothing, mousePosition=Nothing, entries=[] }
 
 poincareDiskScale = 150.0
 
@@ -53,7 +62,21 @@ type Msg =
   | ChangeFocus (Maybe ElementFocus)
 
 init : (Model, Cmd Msg)
-init = (emptyModel, Cmd.none)
+init = 
+  let
+    generateSubTree depth arity =
+      case depth of
+        0 -> Node "" []
+        _  ->
+          let sub = generateSubTree (depth-1) arity
+          in Node "" <| List.repeat arity sub
+    testTree = Node "0" [Node "00" [Node "000" [Node "001" [generateSubTree 2 2]]]
+                    ,Node "01" [Node "010" [generateSubTree 2 2]]
+                    ,generateSubTree 5 2
+                    ]
+    testEntries = entriesFromTree testTree (0,100) 0.5
+  in
+    ({emptyModel | entries=testEntries}, Cmd.none)
 
 inversePosition { location, scale } =
   let invScale = Point.map (\x -> 1.0/x) scale
@@ -74,7 +97,6 @@ calculateUpperhalfMove transformation box oldPosition position =
     transformation 
       |> Moebius.compose (Moebius.upperHalfPlaneTranslatePoints (Complex x y) (Complex x_ y_))
       |> Moebius.normalize
-
 
 calculatePoincareDiskMove transformation box oldPosition position =
 -- do stuff locally but return result in upper half plane
@@ -100,10 +122,9 @@ update msg model =
     MouseMove position ->
       let
         f transformation prevPosition focus = 
-            case focus of
-              UpperhalfPlaneFocus box -> calculateUpperhalfMove transformation box prevPosition position 
-              PoincareDiskFocus box -> calculatePoincareDiskMove transformation box prevPosition position
-              _ -> transformation
+          case focus of
+            UpperhalfPlaneFocus box -> calculateUpperhalfMove transformation box prevPosition position 
+            PoincareDiskFocus box -> calculatePoincareDiskMove transformation box prevPosition position
         transformation_ =
           Maybe.map2 (f model.transformation) model.mousePosition model.focus
             |> Maybe.withDefault model.transformation
@@ -130,38 +151,6 @@ poincareDiskBox = { upperHalfBox |
               }
 
 boxes = [upperHalfBox, poincareDiskBox]
-
-type GeometryEntry = Geodesic Point Point
-  | Circle Point Float (Maybe String)
-
-type DrawableElement =
-  CircleSegment { center : Point, radius : Float, angle : Range }
-  | LineSegment (Point, Point)
-  | Polygon (List Point)
-  | Marker Point
-  | Image { source : String, bounds: Bounds.Bounds }
-  | MultiElement (List DrawableElement)
-
-type PlaneGeometryModel =
-  Euclidean | PoincareDisk | HyperbolicHalfPlane | KleinDisk
-
-type alias Range = (Float, Float)
-
---- MISC FUNCTIONS
-catMaybes maybes = List.foldr (\x l -> case x of
-  Nothing -> l
-  Just x_ -> x_ :: l) [] maybes
-
--- SVG/GFX
-
-transformGeometry scale shape =
-  case shape of
-    CircleSegment {center, radius, angle} -> CircleSegment {center=(scale*(Tuple.first center), scale*(Tuple.second center)), radius=scale*radius, angle=angle}
-    LineSegment (a,b) -> LineSegment (scale <*> a, scale <*> b)
-    Polygon vertices -> Polygon (List.map (\x -> scale <*> x) vertices)
-    Marker a -> Marker (scale <*> a)
-    Image {source, bounds} -> Image {source=source, bounds=bounds}
-    MultiElement elems -> List.map (transformGeometry scale) elems |> MultiElement
 
 positionToSvgTransform {location,scale} =
   let colWiseEntries = List.map toString [Tuple.first scale, 0, 0, Tuple.second scale, Tuple.first location, Tuple.second location]
@@ -238,8 +227,11 @@ constructSvg id shape =
        -- g [] [] -- TODO
 
 applyLod maxErr items =
-  List.map (\x ->
-    Just <| case x of
+  let
+    catMaybes maybes = List.foldr (\x l -> case x of
+      Nothing -> l
+      Just x_ -> x_ :: l) [] maybes
+    f x = Just <| case x of
       CircleSegment {center, radius, angle} ->
         if radius > maxErr
         then
@@ -259,27 +251,15 @@ applyLod maxErr items =
       LineSegment (a,b) -> LineSegment (a,b)
       Marker a -> Marker a
       x -> x
-    ) items |> catMaybes
-{-
-Compass and Straightedge in the
-Poincare Disk:
-http://comp.uark.edu/~strauss/papers/hypcomp.pdf
--}
-poincareArc (ax,ay) (bx,by) =
-  if (ax == 0 && ay == 0) || (bx == 0 && by == 0)
-  then Nothing
-  else
-    let
-      inverseA = (ax,ay) </> (ax*ax+ay*ay)
-    in
-      PlaneGeometry.circleFromThreePoints (ax,ay) (bx,by) inverseA
+  in
+    List.map f items |> catMaybes
 
 pathBetweenPoints : PlaneGeometryModel -> Point -> Point -> DrawableElement
 pathBetweenPoints model (ax,ay) (bx,by) =
   case model of
     Euclidean -> LineSegment ((ax,ay), (bx,by))
     PoincareDisk ->
-      case poincareArc (ax,ay) (bx,by) of
+      case HyperbolicGeometry.poincareArc (ax,ay) (bx,by) of
         Nothing -> LineSegment ((ax, ay), (bx,by))
         Just (c,r) ->
           let theta = angle <| (ax,ay) <-> c
@@ -335,11 +315,8 @@ upperHalfPlaneElementSvg entries transform =
     item =
       List.map (generateGeometryFromEntryUpperHalfPlane transform) entries
         |> applyLod 2
-        --|> compressItems
         |> List.indexedMap constructSvg
         |> Svg.g []
---        (\i e -> constructSvg i (generateGeometryFromEntryUpperHalfPlane transform e))
---        entries
   in
     item
 
@@ -347,26 +324,13 @@ poincareDiskElementSvg entries transform scale =
   let
     data = List.map (generateGeometryFromEntryPoincareDisk transform) entries
       |> applyLod 0.01
-    --item = List.map (transformGeometry scale) data |> compressItems
-    item = List.indexedMap (\i e -> constructSvg i (transformGeometry scale e)) data |> Svg.g []
+    item = List.indexedMap (\i e -> constructSvg i (DrawableElement.transformElement scale e)) data |> Svg.g []
   in
     item
 
--- TREE GENERATION STUFF
-generateSubTree depth arity =
-  case depth of
-    0 -> Node "" []
-    _  ->
-      let sub = generateSubTree (depth-1) arity
-      in Node "" <| List.repeat arity sub
-
-testTree = Node "0" [Node "00" [Node "000" [Node "001" [generateSubTree 2 2]]]
-                    ,Node "01" [Node "010" [generateSubTree 2 2]]
-                    ,generateSubTree 6 2
-                    ]
-
-
 type Tree a = Node a (List (Tree a))
+
+
 entriesFromTree (Node a children) (x,y) radius =
       let angleIncrement = 2*pi/6.8 --9.5
           minAngle = pi - angleIncrement * (List.length children |> toFloat)/2.0
@@ -379,8 +343,6 @@ entriesFromTree (Node a children) (x,y) radius =
               line ::
               (entriesFromTree child (x_,y_) radius)) children
       in my :: others
-entries =
-  entriesFromTree testTree (0,100) 0.5
 
 moebiusUpperHalfPlaneToPoincareDisk = Moebius.upperHalfPlaneToPoincareDiskGeneral (Complex 0 100) (pi/2)
 moebiusPoincareDiskToUpperHalfPlane = Moebius.inverse moebiusUpperHalfPlaneToPoincareDisk
@@ -398,8 +360,8 @@ view model =
         ".shape_2 { stroke: navy; }"
       moeb = model.transformation
       diskTransform = Moebius.compose moebiusUpperHalfPlaneToPoincareDisk moeb
-      upperHalfSvg = upperHalfPlaneElementSvg entries moeb
-      poincareDiskSvg = poincareDiskElementSvg entries diskTransform poincareDiskScale
+      upperHalfSvg = upperHalfPlaneElementSvg model.entries moeb
+      poincareDiskSvg = poincareDiskElementSvg model.entries diskTransform poincareDiskScale
       upperHalfElem = Svg.g [Svg.Attributes.clipPath <| "url(#clip-" ++ upperHalfBox.name ++ ")"]
           [Svg.g [Svg.Attributes.class upperHalfBox.name, Svg.Attributes.transform (positionToSvgTransform upperHalfBox.position)--, viewBox (boundsToViewBox upperHalfBox.bounds)
                 ,Svg.Events.onMouseDown (ChangeFocus <| Just <| UpperhalfPlaneFocus upperHalfBox)

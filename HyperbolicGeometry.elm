@@ -3,6 +3,9 @@ module HyperbolicGeometry exposing (..)
 import Moebius
 import Complex exposing(..)
 import Point exposing(..)
+
+import PlaneGeometry
+
 -- from https://en.wikipedia.org/wiki/Beltrami%E2%80%93Klein_model
 poincareToKlein u = (2 / (1 + (dot u u))) <*> u
 
@@ -26,3 +29,17 @@ euclideanCircleFromPoincareDiskCircle (x,y_) r =
   make it work "correctly" there too
   -}
     (c_, abs r_)
+
+{-
+Compass and Straightedge in the
+Poincare Disk:
+http://comp.uark.edu/~strauss/papers/hypcomp.pdf
+-}
+poincareArc (ax,ay) (bx,by) =
+  if (ax == 0 && ay == 0) || (bx == 0 && by == 0)
+  then Nothing
+  else
+    let
+      inverseA = (ax,ay) </> (ax*ax+ay*ay)
+    in
+      PlaneGeometry.circleFromThreePoints (ax,ay) (bx,by) inverseA

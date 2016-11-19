@@ -1,9 +1,8 @@
 module Moebius exposing (..)
 
--- TODO: why doesn_t this expose Complex
 import Complex exposing(Complex)
 
-type Moebius = Moebius Complex.Complex Complex.Complex Complex.Complex Complex
+type Moebius = Moebius Complex Complex Complex Complex
 
 inverse (Moebius a b c d) =
   Moebius d (Complex.negate b) (Complex.negate c) a
