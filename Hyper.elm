@@ -1,11 +1,15 @@
 import Html exposing (Html, button, div, text)
 
+import Html.Attributes
+import Html.Events
+
 import Svg
 import Svg.Attributes
 import Svg.Events
 import Svg.Lazy
 import Tuple
 import Mouse
+import String
 
 import Moebius
 import Bounds exposing (Bounds)
@@ -33,15 +37,26 @@ type GeometryEntry = Geodesic Point Point
 type PlaneGeometryModel =
   Euclidean | PoincareDisk | HyperbolicHalfPlane | KleinDisk
 
+type Tree a = Node a (List (Tree a))
+
 type alias Model = {
   transformation : Moebius.Moebius,
   focus : Maybe ElementFocus,
   mousePosition : Maybe (Float, Float),
-  entries : List GeometryEntry
+  tree : Maybe (Tree String),
+  entries : List GeometryEntry,
+  spacing : Float
 }
 
 emptyModel : Model
-emptyModel = { transformation=Moebius.identity, focus=Nothing, mousePosition=Nothing, entries=[] }
+emptyModel = {
+  transformation=Moebius.identity,
+  focus=Nothing,
+  mousePosition=Nothing,
+  tree=Nothing,
+  entries=[],
+  spacing=0.0
+  }
 
 poincareDiskScale = 150.0
 
@@ -57,8 +72,8 @@ main =
 type Msg =
   MouseMove (Float, Float)
   | ChangeFocus (Maybe ElementFocus)
-
-type Tree a = Node a (List (Tree a))
+  | ChangeLayoutSpacing Float
+  | UpdateLayout
 
 init : (Model, Cmd Msg)
 init = 
@@ -73,22 +88,8 @@ init =
                     ,Node "01" [Node "010" [generateSubTree 2 2]]
                     ,generateSubTree 5 2
                     ]
-    entriesFromTree (Node a children) (x,y) radius =
-      let angleIncrement = 2*pi/6.8 --9.5
-          minAngle = pi - angleIncrement * (List.length children |> toFloat)/2.0
-          my = Circle (x, y) radius (Just "imgs/circle.png")
-          others = List.concat <| List.indexedMap (\i child ->
-            let
-              (x_, y_) = HyperbolicGeometry.upperPlaneTravelToDirection (x,y) (minAngle + (toFloat i)*angleIncrement) (2.0*radius)
-              line = Geodesic (x,y) (x_,y_)
-            in
-              line ::
-              (entriesFromTree child (x_,y_) radius)) children
-      in my :: others
-    
-    testEntries = entriesFromTree testTree (0,100) 0.5
   in
-    ({emptyModel | entries=testEntries}, Cmd.none)
+    update UpdateLayout {emptyModel | tree=Just testTree}
 
 calculateUpperhalfMove : Moebius.Moebius -> Box -> Point -> Point -> Moebius.Moebius
 calculateUpperhalfMove transformation box oldPosition position = 
@@ -121,7 +122,7 @@ calculatePoincareDiskMove transformation box oldPosition position =
        transformation]
     |> Moebius.normalize
 
-update : Msg -> Model -> (Model, Cmd a)
+update : Msg -> Model -> (Model, Cmd Msg)
 update msg model =
   case msg of
     MouseMove position ->
@@ -136,6 +137,26 @@ update msg model =
       in
         ({model | mousePosition = Just position, transformation=transformation_}, Cmd.none)
     ChangeFocus focus -> ( {model | focus = focus, mousePosition = Nothing}, Cmd.none)
+    ChangeLayoutSpacing spacing ->
+      update UpdateLayout ({ model | spacing = spacing })
+    UpdateLayout ->
+      let
+        entriesFromTree (Node a children) (x,y) radius spacing =
+          let
+            angleIncrement = 2*pi/6.8 --9.5
+            minAngle = pi - angleIncrement * (List.length children |> toFloat)/2.0
+            my = Circle (x, y) radius (Just "imgs/circle.png")
+            others = List.concat <| List.indexedMap (\i child ->
+              let
+                (x_, y_) = HyperbolicGeometry.upperPlaneTravelToDirection (x,y) (minAngle + (toFloat i)*angleIncrement) (2.0*(1.0+spacing)*radius)
+                line = Geodesic (x,y) (x_,y_)
+              in
+                line :: (entriesFromTree child (x_,y_) radius spacing)) children
+          in my :: others
+        entries = case model.tree of
+          Nothing -> []
+          Just tree -> entriesFromTree tree (0,100) 0.5 model.spacing
+      in ({model | entries=entries}, Cmd.none)
 
 subscriptions : Model -> Sub Msg
 subscriptions model = Mouse.moves (\{x, y} -> MouseMove (toFloat x, toFloat y))
@@ -291,6 +312,18 @@ view model =
   div []
     [
       gfxContent
-     ,Html.text (toString model.focus)
+     ,Html.div [] [
+       Html.text "Layout spacing",
+       Html.input [
+         Html.Attributes.type_ "range",
+         Html.Attributes.min "0",
+         Html.Attributes.max "2",
+         Html.Attributes.step "0.02",
+         Html.Attributes.value <| toString model.spacing,
+         Html.Events.onInput <| \x ->
+           ChangeLayoutSpacing <| Result.withDefault model.spacing (String.toFloat x)
+       ] [],
+       Html.text (toString model.spacing)
+     ]
 --     ,Html.text (toString model.transformation)
     ]
