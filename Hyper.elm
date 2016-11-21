@@ -45,7 +45,8 @@ type alias Model = {
   mousePosition : Maybe (Float, Float),
   tree : Maybe (Tree String),
   entries : List GeometryEntry,
-  spacing : Float
+  layoutSpacing : Float,
+  layoutRadius : Float
 }
 
 emptyModel : Model
@@ -55,7 +56,8 @@ emptyModel = {
   mousePosition=Nothing,
   tree=Nothing,
   entries=[],
-  spacing=0.0
+  layoutSpacing=0.0,
+  layoutRadius=0.5
   }
 
 poincareDiskScale = 150.0
@@ -70,9 +72,11 @@ main =
     }
 
 type Msg =
+  -- TODO: add touch and unify with MouseMove
   MouseMove (Float, Float)
   | ChangeFocus (Maybe ElementFocus)
   | ChangeLayoutSpacing Float
+  | ChangeLayoutRadius Float
   | UpdateLayout
 
 init : (Model, Cmd Msg)
@@ -138,7 +142,9 @@ update msg model =
         ({model | mousePosition = Just position, transformation=transformation_}, Cmd.none)
     ChangeFocus focus -> ( {model | focus = focus, mousePosition = Nothing}, Cmd.none)
     ChangeLayoutSpacing spacing ->
-      update UpdateLayout ({ model | spacing = spacing })
+      update UpdateLayout ({ model | layoutSpacing = spacing })
+    ChangeLayoutRadius radius ->
+      update UpdateLayout ({ model | layoutRadius = radius})
     UpdateLayout ->
       let
         entriesFromTree (Node a children) (x,y) radius spacing =
@@ -153,9 +159,7 @@ update msg model =
               in
                 line :: (entriesFromTree child (x_,y_) radius spacing)) children
           in my :: others
-        entries = case model.tree of
-          Nothing -> []
-          Just tree -> entriesFromTree tree (0,100) 0.5 model.spacing
+        entries = Maybe.withDefault [] <| Maybe.map (\x -> entriesFromTree x (0,100) model.layoutRadius model.layoutSpacing) model.tree
       in ({model | entries=entries}, Cmd.none)
 
 subscriptions : Model -> Sub Msg
@@ -260,6 +264,21 @@ poincareDiskElementSvg entries transform scale =
 moebiusUpperHalfPlaneToPoincareDisk = Moebius.upperHalfPlaneToPoincareDiskGeneral (Complex 0 100) (pi/2)
 moebiusPoincareDiskToUpperHalfPlane = Moebius.inverse moebiusUpperHalfPlaneToPoincareDisk
 
+
+slider name min max step value onInput =
+  Html.div [] [
+    Html.text name,
+    Html.input [
+      Html.Attributes.type_ "range",
+      Html.Attributes.min (toString min),
+      Html.Attributes.max (toString max),
+      Html.Attributes.step (toString step),
+      Html.Attributes.value <| toString value,
+      Html.Events.onInput onInput
+     ] [],
+    Html.text <| toString value
+  ]
+
 view : Model -> Html Msg 
 view model =
   let
@@ -312,18 +331,9 @@ view model =
   div []
     [
       gfxContent
-     ,Html.div [] [
-       Html.text "Layout spacing",
-       Html.input [
-         Html.Attributes.type_ "range",
-         Html.Attributes.min "0",
-         Html.Attributes.max "2",
-         Html.Attributes.step "0.02",
-         Html.Attributes.value <| toString model.spacing,
-         Html.Events.onInput <| \x ->
-           ChangeLayoutSpacing <| Result.withDefault model.spacing (String.toFloat x)
-       ] [],
-       Html.text (toString model.spacing)
-     ]
+     , slider "Layout spacing" 0 2 0.01 model.layoutSpacing <| \x ->
+           ChangeLayoutSpacing <| Result.withDefault model.layoutSpacing (String.toFloat x)
+     , slider "Layout radius" 0.2 2 0.01 model.layoutRadius <| \x ->
+           ChangeLayoutRadius <| Result.withDefault model.layoutRadius (String.toFloat x)
 --     ,Html.text (toString model.transformation)
     ]
